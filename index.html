@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Snow Rush 3D Multiplayer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; }
+        #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(255,255,255,0.85); padding: 15px; border-radius: 8px; }
+        #leaderboard { position: absolute; top: 10px; right: 10px; z-index: 10; background: rgba(0,0,0,0.6); color: white; padding: 15px; border-radius: 8px; min-width: 150px; }
+        #center-msg { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 32px; color: red; font-weight: bold; pointer-events: none; display: none; }
+        .name-tag { position: absolute; color: white; background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 4px; font-size: 12px; pointer-events: none; transform: translate(-50%, -100%); }
+        input, button { padding: 6px; margin: 4px 0; }
+    </style>
+    <!-- Three.js (3D描画) と PeerJS (サーバーレス通信) の読み込み -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body>
+    <div id="ui">
+        <h3>❄️ Snow Rush 3D</h3>
+        <input type="text" id="username" placeholder="プレイヤー名" value="Player1"><br>
+        <input type="text" id="room-code" placeholder="部屋コード (例: 1234)"><br>
+        <button id="btn-host">部屋を作る (ホスト)</button>
+        <button id="btn-join">部屋に入る</button>
+        <div id="status" style="margin-top:5px; font-size:12px; color:#555;">部屋を作成または参加してください</div>
+    </div>
+
+    <div id="leaderboard">
+        <strong>🏆 スコア / 順位</strong>
+        <div id="scores-list" style="margin-top: 5px; font-size: 14px;"></div>
+    </div>
+
+    <div id="center-msg">クラッシュ！観戦モード中...</div>
+
+    <script>
+        // --- ゲームの基本変数 ---
+        let scene, camera, renderer;
+        let playerSled, playerSpeed = 0.8, playerTurn = 0;
+        let isAlive = true, isPlaying = false, score = 0;
+        let obstacles = [];
+        let otherPlayers = {}; // 他プレイヤーのソリ
+        let peer, connections = [];
+        let isHost = false, seed = 12345;
+        let spectateIndex = 0;
+
+        // キー入力管理
+        const keys = { ArrowLeft: false, ArrowRight: false, a: false, d: false };
+        window.addEventListener('keydown', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = true; });
+        window.addEventListener('keyup', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
+
+        // --- 擬似乱数 (シード値から同じマップを生成) ---
+        function seededRandom() {
+            let x = Math.sin(seed++) * 10000;
+            return x - Math.floor(x);
+        }
+
+        // --- 3D世界の初期化 ---
+        function initScene() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xd6eaf8);
+            scene.fog = new THREE.Fog(0xd6eaf8, 20, 250);
+
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            const light = new THREE.DirectionalLight(0xffffff, 1);
+            light.position.set(10, 50, 20);
+            scene.add(light);
+            scene.add(new THREE.AmbientLight(0x888888));
+
+            // 雪の地面
+            const groundGeo = new THREE.PlaneGeometry(100, 10000);
+            const groundMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.z = -5000;
+            scene.add(ground);
+
+            // 自分のソリ (赤色)
+            const sledGeo = new THREE.BoxGeometry(1.2, 0.5, 2);
+            const sledMat = new THREE.MeshLambertMaterial({ color: 0xff3333 });
+            playerSled = new THREE.Mesh(sledGeo, sledMat);
+            playerSled.position.set(0, 0.25, 0);
+            scene.add(playerSled);
+        }
+
+        // --- マップ（木・岩）の生成 ---
+        function generateCourse(mapSeed) {
+            seed = mapSeed;
+            // 既存の障害物を消去
+            obstacles.forEach(o => scene.remove(o.mesh));
+            obstacles = [];
+
+            for (let z = -30; z > -3000; z -= 15) {
+                const x = (seededRandom() - 0.5) * 40;
+                const isTree = seededRandom() > 0.3;
+
+                let mesh;
+                if (isTree) {
+                    // 木（円錐＋幹）
+                    const group = new THREE.Group();
+                    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1), new THREE.MeshLambertMaterial({color: 0x8b5a2b}));
+                    trunk.position.y = 0.5;
+                    const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 5), new THREE.MeshLambertMaterial({color: 0x2e8b57}));
+                    leaves.position.y = 2.5;
+                    group.add(trunk, leaves);
+                    group.position.set(x, 0, z);
+                    scene.add(group);
+                    mesh = group;
+                } else {
+                    // 岩
+                    mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1.2), new THREE.MeshLambertMaterial({color: 0x7f8c8d}));
+                    mesh.position.set(x, 0.8, z);
+                    scene.add(mesh);
+                }
+                obstacles.push({ mesh, x, z, radius: 1.2 });
+            }
+        }
+
+        // --- 他プレイヤー（半透明ゴースト）の作成 ---
+        function createGhostSled(id, name) {
+            const group = new THREE.Group();
+            // 半透明の青いソリ
+            const mat = new THREE.MeshLambertMaterial({ color: 0x3388ff, transparent: true, opacity: 0.5 });
+            const sled = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 2), mat);
+            sled.position.y = 0.25;
+            group.add(sled);
+
+            scene.add(group);
+
+            // ネームタグ (HTML)
+            const tag = document.createElement('div');
+            tag.className = 'name-tag';
+            tag.innerText = name;
+            document.body.appendChild(tag);
+
+            otherPlayers[id] = { group, tag, name, isAlive: true, score: 0 };
+        }
+
+        // --- メインループ (描画・物理・通信) ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isPlaying) {
+                if (isAlive) {
+                    // 自プレイヤーの移動
+                    if (keys.ArrowLeft || keys.a) playerSled.position.x -= 0.3;
+                    if (keys.ArrowRight || keys.d) playerSled.position.x += 0.3;
+                    playerSled.position.x = Math.max(-20, Math.min(20, playerSled.position.x));
+                    playerSled.position.z -= playerSpeed;
+                    playerSpeed += 0.0001; // 徐々に加速
+
+                    score = Math.floor(-playerSled.position.z);
+
+                    // カメラ追従
+                    camera.position.set(playerSled.position.x, 4, playerSled.position.z + 7);
+                    camera.lookAt(playerSled.position.x, 1, playerSled.position.z - 5);
+
+                    // 障害物との当たり判定
+                    for (let obs of obstacles) {
+                        const dx = playerSled.position.x - obs.x;
+                        const dz = playerSled.position.z - obs.z;
+                        if (Math.sqrt(dx*dx + dz*dz) < obs.radius) {
+                            // クラッシュ！
+                            isAlive = false;
+                            document.getElementById('center-msg').style.display = 'block';
+                            broadcast({ type: 'dead', score: score });
+                            break;
+                        }
+                    }
+
+                    // 座標を他人に送信
+                    broadcast({
+                        type: 'move',
+                        x: playerSled.position.x,
+                        y: playerSled.position.y,
+                        z: playerSled.position.z,
+                        score: score
+                    });
+                } else {
+                    // --- 観戦モード ---
+                    const alivePlayerIds = Object.keys(otherPlayers).filter(id => otherPlayers[id].isAlive);
+                    if (alivePlayerIds.length > 0) {
+                        const target = otherPlayers[alivePlayerIds[spectateIndex % alivePlayerIds.length]].group;
+                        camera.position.set(target.position.x, 4, target.position.z + 7);
+                        camera.lookAt(target.position.x, 1, target.position.z - 5);
+                    }
+                }
+            }
+
+            // 他プレイヤーのネームタグ座標更新
+            for (let id in otherPlayers) {
+                const p = otherPlayers[id];
+                if (!p.isAlive) continue;
+                const pos = p.group.position.clone().setY(2);
+                pos.project(camera);
+                if (pos.z < 1) {
+                    p.tag.style.display = 'block';
+                    p.tag.style.left = `${(pos.x + 1) * window.innerWidth / 2}px`;
+                    p.tag.style.top = `${(-pos.y + 1) * window.innerHeight / 2}px`;
+                } else {
+                    p.tag.style.display = 'none';
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // 画面クリックで観戦対象を切り替え
+        window.addEventListener('click', () => {
+            if (!isAlive) spectateIndex++;
+        });
+
+        // --- 通信処理 (P2P / PeerJS) ---
+        function setupPeer(customId) {
+            peer = new Peer(customId);
+
+            peer.on('open', () => {
+                document.getElementById('status').innerText = isHost ? "部屋を作成しました！参加者を待機中..." : "部屋に接続しました！";
+                if (isHost) {
+                    const hostSeed = Math.floor(Math.random() * 99999);
+                    generateCourse(hostSeed);
+                    startGame();
+                }
+            });
+
+            // 参加者が接続してきたとき (ホスト側)
+            peer.on('connection', conn => {
+                connections.push(conn);
+                conn.on('data', data => handleData(data, conn.peer));
+                // 新規参加者にシード値を送る
+                setTimeout(() => conn.send({ type: 'init', seed: seed }), 500);
+            });
+        }
+
+        function handleData(data, senderId) {
+            if (data.type === 'init') {
+                generateCourse(data.seed);
+                startGame();
+            } else if (data.type === 'move') {
+                if (!otherPlayers[senderId]) createGhostSled(senderId, data.name || "Player");
+                otherPlayers[senderId].group.position.set(data.x, data.y, data.z);
+                otherPlayers[senderId].score = data.score;
+                updateLeaderboard();
+            } else if (data.type === 'dead') {
+                if (otherPlayers[senderId]) {
+                    otherPlayers[senderId].isAlive = false;
+                    otherPlayers[senderId].tag.style.display = 'none';
+                    scene.remove(otherPlayers[senderId].group);
+                }
+                updateLeaderboard();
+            }
+        }
+
+        function broadcast(data) {
+            data.name = document.getElementById('username').value;
+            connections.forEach(conn => conn.send(data));
+        }
+
+        function updateLeaderboard() {
+            let list = [{ name: document.getElementById('username').value + " (自分)", score: score, alive: isAlive }];
+            for (let id in otherPlayers) {
+                list.push({ name: otherPlayers[id].name, score: otherPlayers[id].score, alive: otherPlayers[id].isAlive });
+            }
+            list.sort((a, b) => b.score - a.score);
+            document.getElementById('scores-list').innerHTML = list.map(p => `<div>${p.alive ? '🟢' : '💀'} ${p.name}: ${p.score}m</div>`).join('');
+        }
+
+        function startGame() {
+            document.getElementById('ui').style.display = 'none';
+            isPlaying = true;
+        }
+
+        // --- ボタン操作 ---
+        document.getElementById('btn-host').onclick = () => {
+            const room = document.getElementById('room-code').value;
+            if (!room) return alert("部屋コードを入力してください");
+            isHost = true;
+            setupPeer("snow-rider-room-" + room);
+        };
+
+        document.getElementById('btn-join').onclick = () => {
+            const room = document.getElementById('room-code').value;
+            if (!room) return alert("部屋コードを入力してください");
+            setupPeer();
+            peer.on('open', () => {
+                const conn = peer.connect("snow-rider-room-" + room);
+                connections.push(conn);
+                conn.on('data', data => handleData(data, conn.peer));
+            });
+        };
+
+        // 画面初期化
+        initScene();
+        animate();
+    </script>
+</body>
+</html>
