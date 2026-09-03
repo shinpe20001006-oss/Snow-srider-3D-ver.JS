@@ -2,297 +2,391 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <title>Snow Rush 3D Multiplayer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snow Rider 3D - Online Multiplayer</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; }
-        #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(255,255,255,0.85); padding: 15px; border-radius: 8px; }
-        #leaderboard { position: absolute; top: 10px; right: 10px; z-index: 10; background: rgba(0,0,0,0.6); color: white; padding: 15px; border-radius: 8px; min-width: 150px; }
-        #center-msg { position: absolute; top: 40%; width: 100%; text-align: center; font-size: 32px; color: red; font-weight: bold; pointer-events: none; display: none; }
-        .name-tag { position: absolute; color: white; background: rgba(0,0,0,0.6); padding: 2px 6px; border-radius: 4px; font-size: 12px; pointer-events: none; transform: translate(-50%, -100%); }
-        input, button { padding: 6px; margin: 4px 0; }
+        body { margin: 0; overflow: hidden; background: #cce0ff; font-family: 'Arial Black', sans-serif; user-select: none; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        #menu-box { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(15, 23, 42, 0.85); padding: 30px; border-radius: 16px; color: white; text-align: center; pointer-events: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.5); border: 2px solid #38bdf8; }
+        input { padding: 12px; font-size: 16px; border-radius: 8px; border: none; margin: 8px 0; width: 220px; text-align: center; font-weight: bold; }
+        button { padding: 12px 24px; font-size: 16px; font-weight: bold; border-radius: 8px; border: none; cursor: pointer; background: #38bdf8; color: #0f172a; margin: 5px; transition: 0.2s; }
+        button:hover { background: #7dd3fc; transform: scale(1.05); }
+        #hud { position: absolute; top: 20px; left: 20px; color: white; font-size: 28px; text-shadow: 2px 2px 4px rgba(0,0,0,0.6); display: none; }
+        #leaderboard { position: absolute; top: 20px; right: 20px; background: rgba(0,0,0,0.6); color: white; padding: 15px; border-radius: 10px; min-width: 180px; display: none; }
+        #crash-banner { position: absolute; top: 30%; width: 100%; text-align: center; color: #ef4444; font-size: 48px; font-weight: 900; text-shadow: 3px 3px 0 #000; display: none; }
+        .player-label { position: absolute; color: white; background: rgba(0,0,0,0.7); padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; pointer-events: none; transform: translate(-50%, -100%); border: 1px solid #38bdf8; }
     </style>
-    <!-- Three.js (3D描画) と PeerJS (サーバーレス通信) の読み込み -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
 </head>
 <body>
-    <div id="ui">
-        <h3>❄️ Snow Rush 3D</h3>
-        <input type="text" id="username" placeholder="プレイヤー名" value="Player1"><br>
-        <input type="text" id="room-code" placeholder="部屋コード (例: 1234)"><br>
-        <button id="btn-host">部屋を作る (ホスト)</button>
-        <button id="btn-join">部屋に入る</button>
-        <div id="status" style="margin-top:5px; font-size:12px; color:#555;">部屋を作成または参加してください</div>
-    </div>
+    <div id="ui-layer">
+        <div id="hud">距離: <span id="dist-val">0</span> m</div>
+        <div id="leaderboard">
+            <div style="border-bottom: 2px solid #555; padding-bottom:5px; margin-bottom:5px;">🏆 順位表</div>
+            <div id="player-list"></div>
+        </div>
+        <div id="crash-banner">💥 クラッシュ！<br><span style="font-size:20px; color:white;">画面クリックで他プレイヤーを観戦</span></div>
 
-    <div id="leaderboard">
-        <strong>🏆 スコア / 順位</strong>
-        <div id="scores-list" style="margin-top: 5px; font-size: 14px;"></div>
+        <div id="menu-box">
+            <h1 style="margin-top:0; color:#38bdf8; font-size:32px;">❄️ SNOW RIDER 3D</h1>
+            <input type="text" id="p-name" placeholder="名前を入力" value="Rider"><br>
+            <input type="text" id="p-room" placeholder="部屋コード (例: 777)"><br>
+            <button id="btn-create">部屋を作成</button>
+            <button id="btn-enter">部屋に参加</button>
+            <div id="status-msg" style="margin-top:10px; font-size:13px; color:#94a3b8;">部屋コードを入力してスタート</div>
+        </div>
     </div>
-
-    <div id="center-msg">クラッシュ！観戦モード中...</div>
 
     <script>
-        // --- ゲームの基本変数 ---
-        let scene, camera, renderer;
-        let playerSled, playerSpeed = 0.8, playerTurn = 0;
-        let isAlive = true, isPlaying = false, score = 0;
-        let obstacles = [];
-        let otherPlayers = {}; // 他プレイヤーのソリ
-        let peer, connections = [];
-        let isHost = false, seed = 12345;
-        let spectateIndex = 0;
+        // --- サウンド生成器 (Web Audio API) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playSound(type) {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            const t = audioCtx.currentTime;
 
-        // キー入力管理
-        const keys = { ArrowLeft: false, ArrowRight: false, a: false, d: false };
-        window.addEventListener('keydown', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = true; });
-        window.addEventListener('keyup', e => { if (keys.hasOwnProperty(e.key)) keys[e.key] = false; });
-
-        // --- 擬似乱数 (シード値から同じマップを生成) ---
-        function seededRandom() {
-            let x = Math.sin(seed++) * 10000;
-            return x - Math.floor(x);
-        }
-
-        // --- 3D世界の初期化 ---
-        function initScene() {
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0xd6eaf8);
-            scene.fog = new THREE.Fog(0xd6eaf8, 20, 250);
-
-            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-
-            const light = new THREE.DirectionalLight(0xffffff, 1);
-            light.position.set(10, 50, 20);
-            scene.add(light);
-            scene.add(new THREE.AmbientLight(0x888888));
-
-            // 雪の地面
-            const groundGeo = new THREE.PlaneGeometry(100, 10000);
-            const groundMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-            const ground = new THREE.Mesh(groundGeo, groundMat);
-            ground.rotation.x = -Math.PI / 2;
-            ground.position.z = -5000;
-            scene.add(ground);
-
-            // 自分のソリ (赤色)
-            const sledGeo = new THREE.BoxGeometry(1.2, 0.5, 2);
-            const sledMat = new THREE.MeshLambertMaterial({ color: 0xff3333 });
-            playerSled = new THREE.Mesh(sledGeo, sledMat);
-            playerSled.position.set(0, 0.25, 0);
-            scene.add(playerSled);
-        }
-
-        // --- マップ（木・岩）の生成 ---
-        function generateCourse(mapSeed) {
-            seed = mapSeed;
-            // 既存の障害物を消去
-            obstacles.forEach(o => scene.remove(o.mesh));
-            obstacles = [];
-
-            for (let z = -30; z > -3000; z -= 15) {
-                const x = (seededRandom() - 0.5) * 40;
-                const isTree = seededRandom() > 0.3;
-
-                let mesh;
-                if (isTree) {
-                    // 木（円錐＋幹）
-                    const group = new THREE.Group();
-                    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 1), new THREE.MeshLambertMaterial({color: 0x8b5a2b}));
-                    trunk.position.y = 0.5;
-                    const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 5), new THREE.MeshLambertMaterial({color: 0x2e8b57}));
-                    leaves.position.y = 2.5;
-                    group.add(trunk, leaves);
-                    group.position.set(x, 0, z);
-                    scene.add(group);
-                    mesh = group;
-                } else {
-                    // 岩
-                    mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1.2), new THREE.MeshLambertMaterial({color: 0x7f8c8d}));
-                    mesh.position.set(x, 0.8, z);
-                    scene.add(mesh);
-                }
-                obstacles.push({ mesh, x, z, radius: 1.2 });
+            if (type === 'jump') {
+                osc.frequency.setValueAtTime(150, t);
+                osc.frequency.exponentialRampToValueAtTime(400, t + 0.15);
+                gain.gain.setValueAtTime(0.3, t);
+                gain.gain.linearRampToValueAtTime(0.01, t + 0.15);
+                osc.start(t); osc.stop(t + 0.15);
+            } else if (type === 'crash') {
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(100, t);
+                osc.frequency.linearRampToValueAtTime(30, t + 0.4);
+                gain.gain.setValueAtTime(0.5, t);
+                gain.gain.linearRampToValueAtTime(0.01, t + 0.4);
+                osc.start(t); osc.stop(t + 0.4);
             }
         }
 
-        // --- 他プレイヤー（半透明ゴースト）の作成 ---
-        function createGhostSled(id, name) {
-            const group = new THREE.Group();
-            // 半透明の青いソリ
-            const mat = new THREE.MeshLambertMaterial({ color: 0x3388ff, transparent: true, opacity: 0.5 });
-            const sled = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.5, 2), mat);
-            sled.position.y = 0.25;
-            group.add(sled);
+        // --- ゲームエンジン基本変数 ---
+        let scene, camera, renderer;
+        let player, sledMesh, playerSpeed = 1.0, isAlive = true, isPlaying = false;
+        let pY = 0, vY = 0, isGrounded = true, rollAngle = 0;
+        let obstacles = [], otherPlayers = {}, connections = [], peer;
+        let isHost = false, mapSeed = 100, spectateIdx = 0;
+        let snowParticles;
 
-            scene.add(group);
+        const keys = {};
+        window.addEventListener('keydown', e => { keys[e.code] = true; if(e.code === 'Space') e.preventDefault(); });
+        window.addEventListener('keyup', e => { keys[e.code] = false; });
 
-            // ネームタグ (HTML)
-            const tag = document.createElement('div');
-            tag.className = 'name-tag';
-            tag.innerText = name;
-            document.body.appendChild(tag);
-
-            otherPlayers[id] = { group, tag, name, isAlive: true, score: 0 };
+        function seededRandom() {
+            let x = Math.sin(mapSeed++) * 10000;
+            return x - Math.floor(x);
         }
 
-        // --- メインループ (描画・物理・通信) ---
+        // --- 3Dモデルビルダー (ソリ・木・雪だるま) ---
+        function buildSled(isGhost = false) {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({
+                color: isGhost ? 0x00a8ff : 0xd63031,
+                transparent: isGhost,
+                opacity: isGhost ? 0.45 : 1.0,
+                roughness: 0.3
+            });
+            const metalMat = new THREE.MeshStandardMaterial({ color: 0x2d3436, metalness: 0.8 });
+
+            // ソリの土台
+            const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.15, 2.4), mat);
+            base.position.y = 0.4;
+            group.add(base);
+
+            // スキー板（左右）
+            for (let side of [-0.6, 0.6]) {
+                const runner = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 2.8), metalMat);
+                runner.position.set(side, 0.1, -0.2);
+                group.add(runner);
+            }
+            return group;
+        }
+
+        function createTree(x, z) {
+            const group = new THREE.Group();
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, 2, 6), new THREE.MeshStandardMaterial({color: 0x4a2f13}));
+            trunk.position.y = 1;
+            group.add(trunk);
+
+            const greenMat = new THREE.MeshStandardMaterial({color: 0x1e4620, roughness: 0.9});
+            for (let i = 0; i < 3; i++) {
+                const leaves = new THREE.Mesh(new THREE.ConeGeometry(2.2 - i*0.4, 2.5, 6), greenMat);
+                leaves.position.y = 2.5 + i * 1.3;
+                group.add(leaves);
+            }
+            group.position.set(x, 0, z);
+            return group;
+        }
+
+        function createSnowman(x, z) {
+            const group = new THREE.Group();
+            const snowMat = new THREE.MeshStandardMaterial({color: 0xffffff, roughness: 0.5});
+            const b1 = new THREE.Mesh(new THREE.SphereGeometry(1.2, 8, 8), snowMat); b1.position.y = 1.0;
+            const b2 = new THREE.Mesh(new THREE.SphereGeometry(0.8, 8, 8), snowMat); b2.position.y = 2.4;
+            group.add(b1, b2);
+            group.position.set(x, 0, z);
+            return group;
+        }
+
+        // --- シーン構築 ---
+        function initScene() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xa0c4ff);
+            scene.fog = new THREE.FogExp2(0xa0c4ff, 0.008);
+
+            camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+            sun.position.set(30, 60, 20);
+            sun.castShadow = true;
+            scene.add(sun);
+            scene.add(new THREE.AmbientLight(0xddeeff, 0.7));
+
+            // 地面（雪山）
+            const ground = new THREE.Mesh(
+                new THREE.PlaneGeometry(120, 6000),
+                new THREE.MeshStandardMaterial({ color: 0xf0f8ff, roughness: 0.8 })
+            );
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.z = -3000;
+            scene.add(ground);
+
+            // 吹雪エフェクト (パーティクル)
+            const snowGeo = new THREE.BufferGeometry();
+            const snowCount = 1500;
+            const posArray = new Float32Array(snowCount * 3);
+            for(let i=0; i<snowCount*3; i+=3) {
+                posArray[i] = (Math.random() - 0.5) * 80;
+                posArray[i+1] = Math.random() * 20;
+                posArray[i+2] = (Math.random() - 0.5) * 80;
+            }
+            snowGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            snowParticles = new THREE.Points(snowGeo, new THREE.PointsMaterial({color: 0xffffff, size: 0.2}));
+            scene.add(snowParticles);
+
+            player = new THREE.Group();
+            sledMesh = buildSled(false);
+            player.add(sledMesh);
+            scene.add(player);
+        }
+
+        // --- コース生成 ---
+        function buildCourse(seedVal) {
+            mapSeed = seedVal;
+            obstacles.forEach(o => scene.remove(o.mesh));
+            obstacles = [];
+
+            for (let z = -40; z > -5000; z -= 14) {
+                const x = (seededRandom() - 0.5) * 60;
+                const type = seededRandom();
+                let mesh, radius;
+
+                if (type < 0.6) {
+                    mesh = createTree(x, z); radius = 1.3;
+                } else if (type < 0.85) {
+                    mesh = createSnowman(x, z); radius = 1.4;
+                } else {
+                    mesh = new THREE.Mesh(new THREE.DodecahedronGeometry(1.6), new THREE.MeshStandardMaterial({color: 0x57606f}));
+                    mesh.position.set(x, 1.2, z);
+                    radius = 1.6;
+                }
+                scene.add(mesh);
+                obstacles.push({ mesh, x, z, radius });
+            }
+        }
+
+        // --- 他プレイヤー管理 ---
+        function createGhost(id, name) {
+            const group = new THREE.Group();
+            group.add(buildSled(true));
+            scene.add(group);
+
+            const label = document.createElement('div');
+            label.className = 'player-label';
+            label.innerText = name;
+            document.body.appendChild(label);
+
+            otherPlayers[id] = { group, label, name, isAlive: true, score: 0 };
+        }
+
+        // --- メインループ ---
         function animate() {
             requestAnimationFrame(animate);
 
             if (isPlaying) {
                 if (isAlive) {
-                    // 自プレイヤーの移動
-                    if (keys.ArrowLeft || keys.a) playerSled.position.x -= 0.3;
-                    if (keys.ArrowRight || keys.d) playerSled.position.x += 0.3;
-                    playerSled.position.x = Math.max(-20, Math.min(20, playerSled.position.x));
-                    playerSled.position.z -= playerSpeed;
-                    playerSpeed += 0.0001; // 徐々に加速
+                    // 横移動 & 傾きアニメーション
+                    let moveX = 0;
+                    if (keys['ArrowLeft'] || keys['KeyA']) { moveX -= 0.45; rollAngle = 0.35; }
+                    else if (keys['ArrowRight'] || keys['KeyD']) { moveX += 0.45; rollAngle = -0.35; }
+                    else { rollAngle *= 0.85; }
 
-                    score = Math.floor(-playerSled.position.z);
+                    player.position.x += moveX;
+                    player.position.x = Math.max(-28, Math.min(28, player.position.x));
+                    sledMesh.rotation.z = rollAngle;
+
+                    // ジャンプ物理演算
+                    if ((keys['Space'] || keys['ArrowUp'] || keys['KeyW']) && isGrounded) {
+                        vY = 0.35;
+                        isGrounded = false;
+                        playSound('jump');
+                    }
+                    pY += vY;
+                    vY -= 0.018; // 重力
+                    if (pY <= 0) { pY = 0; vY = 0; isGrounded = true; }
+                    player.position.y = pY;
+
+                    // 前進 & 加速
+                    player.position.z -= playerSpeed;
+                    playerSpeed = Math.min(2.5, playerSpeed + 0.00015);
+
+                    const currentDist = Math.floor(-player.position.z);
+                    document.getElementById('dist-val').innerText = currentDist;
 
                     // カメラ追従
-                    camera.position.set(playerSled.position.x, 4, playerSled.position.z + 7);
-                    camera.lookAt(playerSled.position.x, 1, playerSled.position.z - 5);
+                    camera.position.set(player.position.x * 0.7, player.position.y + 4.5, player.position.z + 8.5);
+                    camera.lookAt(player.position.x, player.position.y + 1, player.position.z - 10);
 
-                    // 障害物との当たり判定
-                    for (let obs of obstacles) {
-                        const dx = playerSled.position.x - obs.x;
-                        const dz = playerSled.position.z - obs.z;
-                        if (Math.sqrt(dx*dx + dz*dz) < obs.radius) {
-                            // クラッシュ！
-                            isAlive = false;
-                            document.getElementById('center-msg').style.display = 'block';
-                            broadcast({ type: 'dead', score: score });
-                            break;
+                    // 衝突判定 (ジャンプ中は判定を回避可能)
+                    if (pY < 1.2) {
+                        for (let obs of obstacles) {
+                            const dx = player.position.x - obs.x;
+                            const dz = player.position.z - obs.z;
+                            if (Math.hypot(dx, dz) < obs.radius) {
+                                isAlive = false;
+                                playSound('crash');
+                                document.getElementById('crash-banner').style.display = 'block';
+                                broadcast({ type: 'crash', score: currentDist });
+                                break;
+                            }
                         }
                     }
 
-                    // 座標を他人に送信
                     broadcast({
-                        type: 'move',
-                        x: playerSled.position.x,
-                        y: playerSled.position.y,
-                        z: playerSled.position.z,
-                        score: score
+                        type: 'pos',
+                        x: player.position.x, y: player.position.y, z: player.position.z,
+                        rz: sledMesh.rotation.z, score: currentDist
                     });
+
                 } else {
-                    // --- 観戦モード ---
-                    const alivePlayerIds = Object.keys(otherPlayers).filter(id => otherPlayers[id].isAlive);
-                    if (alivePlayerIds.length > 0) {
-                        const target = otherPlayers[alivePlayerIds[spectateIndex % alivePlayerIds.length]].group;
-                        camera.position.set(target.position.x, 4, target.position.z + 7);
-                        camera.lookAt(target.position.x, 1, target.position.z - 5);
+                    // 観戦モード
+                    const aliveIds = Object.keys(otherPlayers).filter(id => otherPlayers[id].isAlive);
+                    if (aliveIds.length > 0) {
+                        const target = otherPlayers[aliveIds[spectateIdx % aliveIds.length]].group;
+                        camera.position.set(target.position.x, target.position.y + 5, target.position.z + 9);
+                        camera.lookAt(target.position.x, target.position.y + 1, target.position.z - 10);
                     }
                 }
+
+                // 吹雪をプレイヤーの周りに移動
+                snowParticles.position.set(camera.position.x, 0, camera.position.z - 20);
             }
 
-            // 他プレイヤーのネームタグ座標更新
+            // ネームタグ描画同期
             for (let id in otherPlayers) {
                 const p = otherPlayers[id];
                 if (!p.isAlive) continue;
-                const pos = p.group.position.clone().setY(2);
+                const pos = p.group.position.clone().setY(2.2);
                 pos.project(camera);
                 if (pos.z < 1) {
-                    p.tag.style.display = 'block';
-                    p.tag.style.left = `${(pos.x + 1) * window.innerWidth / 2}px`;
-                    p.tag.style.top = `${(-pos.y + 1) * window.innerHeight / 2}px`;
-                } else {
-                    p.tag.style.display = 'none';
-                }
+                    p.label.style.display = 'block';
+                    p.label.style.left = `${(pos.x + 1) * window.innerWidth / 2}px`;
+                    p.label.style.top = `${(-pos.y + 1) * window.innerHeight / 2}px`;
+                } else { p.label.style.display = 'none'; }
             }
 
             renderer.render(scene, camera);
         }
 
-        // 画面クリックで観戦対象を切り替え
-        window.addEventListener('click', () => {
-            if (!isAlive) spectateIndex++;
-        });
+        window.addEventListener('click', () => { if (!isAlive) spectateIdx++; });
 
-        // --- 通信処理 (P2P / PeerJS) ---
-        function setupPeer(customId) {
-            peer = new Peer(customId);
+        // --- 通信処理 ---
+        function setupNetwork(isHosting, roomCode) {
+            const peerId = isHosting ? "snowrider-" + roomCode : null;
+            peer = new Peer(peerId);
 
             peer.on('open', () => {
-                document.getElementById('status').innerText = isHost ? "部屋を作成しました！参加者を待機中..." : "部屋に接続しました！";
-                if (isHost) {
-                    const hostSeed = Math.floor(Math.random() * 99999);
-                    generateCourse(hostSeed);
-                    startGame();
+                document.getElementById('status-msg').innerText = isHosting ? "部屋を作成！他プレイヤーの参加待ち..." : "接続成功！";
+                if (isHosting) {
+                    const seed = Math.floor(Math.random() * 100000);
+                    buildCourse(seed);
+                    startMatch();
                 }
             });
 
-            // 参加者が接続してきたとき (ホスト側)
             peer.on('connection', conn => {
                 connections.push(conn);
-                conn.on('data', data => handleData(data, conn.peer));
-                // 新規参加者にシード値を送る
-                setTimeout(() => conn.send({ type: 'init', seed: seed }), 500);
+                conn.on('data', d => handleNetData(d, conn.peer));
+                setTimeout(() => conn.send({ type: 'start', seed: mapSeed }), 600);
             });
         }
 
-        function handleData(data, senderId) {
-            if (data.type === 'init') {
-                generateCourse(data.seed);
-                startGame();
-            } else if (data.type === 'move') {
-                if (!otherPlayers[senderId]) createGhostSled(senderId, data.name || "Player");
+        function handleNetData(data, senderId) {
+            if (data.type === 'start') {
+                buildCourse(data.seed);
+                startMatch();
+            } else if (data.type === 'pos') {
+                if (!otherPlayers[senderId]) createGhost(senderId, data.name || "Rider");
                 otherPlayers[senderId].group.position.set(data.x, data.y, data.z);
+                otherPlayers[senderId].group.children[0].rotation.z = data.rz;
                 otherPlayers[senderId].score = data.score;
-                updateLeaderboard();
-            } else if (data.type === 'dead') {
+                refreshLeaderboard();
+            } else if (data.type === 'crash') {
                 if (otherPlayers[senderId]) {
                     otherPlayers[senderId].isAlive = false;
-                    otherPlayers[senderId].tag.style.display = 'none';
+                    otherPlayers[senderId].label.style.display = 'none';
                     scene.remove(otherPlayers[senderId].group);
                 }
-                updateLeaderboard();
+                refreshLeaderboard();
             }
         }
 
-        function broadcast(data) {
-            data.name = document.getElementById('username').value;
-            connections.forEach(conn => conn.send(data));
+        function broadcast(msg) {
+            msg.name = document.getElementById('p-name').value;
+            connections.forEach(c => c.send(msg));
         }
 
-        function updateLeaderboard() {
-            let list = [{ name: document.getElementById('username').value + " (自分)", score: score, alive: isAlive }];
-            for (let id in otherPlayers) {
-                list.push({ name: otherPlayers[id].name, score: otherPlayers[id].score, alive: otherPlayers[id].isAlive });
-            }
-            list.sort((a, b) => b.score - a.score);
-            document.getElementById('scores-list').innerHTML = list.map(p => `<div>${p.alive ? '🟢' : '💀'} ${p.name}: ${p.score}m</div>`).join('');
+        function refreshLeaderboard() {
+            let all = [{ name: document.getElementById('p-name').value + " (自分)", score: isAlive ? Math.floor(-player.position.z) : 0, alive: isAlive }];
+            for (let id in otherPlayers) all.push({ name: otherPlayers[id].name, score: otherPlayers[id].score, alive: otherPlayers[id].isAlive });
+            all.sort((a,b) => b.score - a.score);
+            document.getElementById('player-list').innerHTML = all.map(p => `<div style="margin:3px 0;">${p.alive ? '🟢' : '💀'} ${p.name}: <b>${p.score}m</b></div>`).join('');
         }
 
-        function startGame() {
-            document.getElementById('ui').style.display = 'none';
+        function startMatch() {
+            document.getElementById('menu-box').style.display = 'none';
+            document.getElementById('hud').style.display = 'block';
+            document.getElementById('leaderboard').style.display = 'block';
             isPlaying = true;
         }
 
-        // --- ボタン操作 ---
-        document.getElementById('btn-host').onclick = () => {
-            const room = document.getElementById('room-code').value;
-            if (!room) return alert("部屋コードを入力してください");
+        // ボタン
+        document.getElementById('btn-create').onclick = () => {
+            const r = document.getElementById('p-room').value;
+            if(!r) return alert("部屋コードを入力してください");
             isHost = true;
-            setupPeer("snow-rider-room-" + room);
+            setupNetwork(true, r);
         };
 
-        document.getElementById('btn-join').onclick = () => {
-            const room = document.getElementById('room-code').value;
-            if (!room) return alert("部屋コードを入力してください");
-            setupPeer();
+        document.getElementById('btn-enter').onclick = () => {
+            const r = document.getElementById('p-room').value;
+            if(!r) return alert("部屋コードを入力してください");
+            setupNetwork(false, r);
             peer.on('open', () => {
-                const conn = peer.connect("snow-rider-room-" + room);
+                const conn = peer.connect("snowrider-" + r);
                 connections.push(conn);
-                conn.on('data', data => handleData(data, conn.peer));
+                conn.on('data', d => handleNetData(d, conn.peer));
             });
         };
 
-        // 画面初期化
         initScene();
         animate();
     </script>
